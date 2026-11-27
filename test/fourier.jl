@@ -157,6 +157,11 @@ end
     # rows and columns of `w` and `a` (in the transform term) are marked against every variable
     # that occurs; `d` does not occur, and `x`, `y` pair only as the rest of the expression says
     @test Matrix(H) == Bool[1 1 1 1 0; 1 0 0 1 0; 1 0 1 1 0; 1 1 1 1 0; 0 0 0 0 0]
+    # next to a function of a symbolic array, the variables count as occurring
+    @variables A[1:3]
+    @syms g(B::AbstractVector)::Real
+    H = Symbolics.hessian_sparsity(real(FourierTransform(t => w)(f(t))) + g(A) + x^2 + y, [w, x, y, d])
+    @test Matrix(H) == Bool[1 1 1 1; 1 1 0 0; 1 0 0 0; 1 0 0 0]
     @test !Symbolics.isaffine(real(T), [w])
 
     # generated code cannot evaluate a transform term
