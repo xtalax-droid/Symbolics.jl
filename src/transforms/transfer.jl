@@ -95,8 +95,10 @@ function transfer_function(
         bordered = DP.Polynomial[M AB[:, nx + j]; -permutedims(CD[i, 1:nx]) CD[i, nx + j]]
         num = _determinant(bordered, o)
         den = F[i] * detM
-        # dividing a rational number by one would give a float
-        G[i, j] = iszero(num) ? Num(0) : isone(den) ? narrow(num) : narrow(num) / narrow(den)
+        # dividing by a constant after narrowing could overflow `Int`, or give a float
+        G[i, j] = iszero(num) ? Num(0) :
+            MP.isconstant(den) ? narrow(num * (1 // MP.leading_coefficient(den))) :
+            narrow(num) / narrow(den)
     end
     return simplify ? map(simplify_fractions, G) : G
 end
@@ -124,7 +126,7 @@ function _fraction!(atoms, x::SymbolicT)
         op === (*) && return _product(map(a -> _fraction!(atoms, a), args))
         op === (/) && return _product([_fraction!(atoms, args[1]), _inverse!(atoms, args[2])])
         if op === (^)
-            n = unwrap_const(args[2])
+            n = _integer_exponent(args[2])
             n isa Integer && n >= 0 && return _power(_fraction!(atoms, args[1]), n)
             n isa Integer && return _power(_inverse!(atoms, args[1]), -n)
         end
@@ -141,7 +143,7 @@ function _inverse!(atoms, x::SymbolicT)
         op === (*) && return _product(map(a -> _inverse!(atoms, a), args))
         op === (/) && return _product([_fraction!(atoms, args[2]), _inverse!(atoms, args[1])])
         if op === (^)
-            n = unwrap_const(args[2])
+            n = _integer_exponent(args[2])
             n isa Integer && n >= 0 && return _power(_inverse!(atoms, args[1]), n)
             n isa Integer && return _power(_fraction!(atoms, args[1]), -n)
         end
@@ -150,6 +152,12 @@ function _inverse!(atoms, x::SymbolicT)
     MP.isconstant(num) && !iszero(num) &&
         return _expand(den) * (1 // MP.leading_coefficient(num)), _Factors()
     return _expand(den), _Factors(num => 1)
+end
+
+# An integer-valued constant exponent, such as `2//1`, as an `Integer`
+function _integer_exponent(x)
+    n = unwrap_const(x)
+    return n isa Real && isfinite(n) && isinteger(n) ? Integer(n) : nothing
 end
 
 _product(fractions) = prod(first, fractions), mergewith(+, _Factors(), map(last, fractions)...)
@@ -228,7 +236,8 @@ cancellation can leave no correct digits, or give `NaN`, close to a resonance.
 otherwise an `ArgumentError` is thrown. `substitute` folds the constants in the arithmetic
 of the values, so machine integers can wrap around and floating-point numbers round. To
 keep the exact evaluation, substitute `Rational{BigInt}` values, such as
-`Rational{BigInt}(0.1)`. At a pole on the grid the entry is not finite (it contains `Inf`
+`Rational{BigInt}(0.1)`. With `exact = true`, an `ArgumentError` is thrown for an infinite
+frequency. At a pole on the grid the entry is not finite (it contains `Inf`
 or `NaN`). A common factor of numerator and denominator which vanishes on the grid also
 gives `NaN`.
 
@@ -268,11 +277,13 @@ function frequency_response(
     atoms = Bijections.Bijection{SymbolicUtils.PolyVarT, SymbolicT}()
     x = SymbolicUtils.basicsymbolic_to_polyvar(Bijections.active_inv(atoms), unwrap(s))
     fractions = map(G) do g
-        exact || return nothing
         num, den = _fraction!(atoms, unwrap(g))
         num, _expand(den)
     end
-    if exact && length(atoms) == 1
+    polynomial = length(atoms) == 1
+    if exact && polynomial
+        all(isfinite, ωs) ||
+            throw(ArgumentError("`exact = true` needs finite frequencies, got $ωs"))
         # Fractions of polynomials in `s` are evaluated exactly. Cancellation in the
         # expanded polynomials can leave far fewer correct digits than `ComplexF64` has.
         coefficients = map(f -> map(p -> _coefficients(p, x), f), fractions)
@@ -282,8 +293,9 @@ function frequency_response(
         end
         return response
     end
-    # `BigInt` and rational constants would make the generated function compute in `BigFloat`
-    Gf = map(g -> Num(SymbolicUtils.Postwalk(_float_constant)(unwrap(g))), G)
+    # `BigInt` and rational constants would make the generated function compute in
+    # `BigFloat`. In other functions, converting them could change the method called.
+    Gf = polynomial ? map(g -> Num(SymbolicUtils.Postwalk(_float_constant)(unwrap(g))), G) : G
     # NaNMath functions do not accept complex arguments
     _, evaluate! = build_function(Gf, s; expression = Val{false}, nanmath = false)
     for (k, ω) in enumerate(ωs)

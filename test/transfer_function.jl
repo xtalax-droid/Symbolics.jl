@@ -241,6 +241,39 @@ has_division(x) = iscall(x) &&
     end
 end
 
+@testset "constants of the result above `typemax(Int)`" begin
+    G = transfer_function(fill(s - 4_000_000_000, 1, 1), [1 // 4_000_000_000], [1], 0, s)
+    @test value(G[1]) == 1 // big(16_000_000_000_000_000_000)
+    G = transfer_function(fill(s - 3, 1, 1), [1 // typemax(Int)], [1], 0, s)
+    @test value(G[1]) == 1 // (3 * big(typemax(Int)))
+end
+
+@testset "integer-valued rational exponents" begin
+    @variables t
+    a = s + (1 + 1 / t)^(2 // 1) - 1 - 2 / t - 1 / t^2
+    @test_throws ArgumentError transfer_function(fill(a, 1, 1), [1], [1], 0, s)
+    # `1 - 2^-60` rounds to `1.0`, so only the exact evaluation sees the difference
+    g = s^(2 // 1) + (1 - 1 // 2^60)
+    @test frequency_response(fill(g, 1, 1), s, [1.0])[1] == -(2.0^-60)
+end
+
+# `_integer_power` takes an integer, which must not become a float before evaluation
+_integer_power(x, n::Integer) = x^n
+@register_symbolic _integer_power(x, n::Integer)
+
+@testset "other functions are evaluated as given" begin
+    G = fill(_integer_power(s, big(2)) + 1 // 3, 1, 1)
+    for exact in (true, false)
+        @test frequency_response(G, s, [2.0]; exact)[1] ≈ -4 + 1 / 3
+    end
+end
+
+@testset "infinite frequencies" begin
+    G = fill(Num(3), 1, 1)
+    @test_throws ArgumentError frequency_response(G, s, [Inf])
+    @test frequency_response(G, s, [Inf]; exact = false)[1] == 3
+end
+
 @testset "free parameters" begin
     G = transfer_function(fill(-1 / T, 1, 1), [1 / T], [1], 0, s)
     @test_throws ArgumentError frequency_response(G, s, [1.0])
