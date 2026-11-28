@@ -25,6 +25,9 @@ Magnitude and phase of the first input-output pair are `abs.(H[1, 1, :])` and
 The coefficients of `G` are kept exact, and `frequency_response` evaluates them in exact
 rational arithmetic before rounding to `ComplexF64`, because the expanded polynomials can
 cancel to far fewer digits than `Float64` holds near a lightly damped resonance.
+`frequency_response(G, s, ωs; exact = false)` evaluates in `ComplexF64` arithmetic
+instead, which is tens of times faster, but can give `NaN` or
+inaccurate values close to such a resonance.
 `substitute` folds constants in the arithmetic of the values it is given, so floating-point
 values round there. Substitute rational values to keep the evaluation exact:
 

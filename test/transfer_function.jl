@@ -206,6 +206,26 @@ end
 end
 
 using Symbolics.SymbolicUtils: iscall, isdiv, ispow, arguments
+@testset "`exact = false`" begin
+    # far from resonances both evaluations agree, also with `BigInt` and rational coefficients
+    rng = MersenneTwister(2)
+    A, B, C, D = randn(rng, 4, 4), randn(rng, 4, 2), randn(rng, 3, 4), randn(rng, 3, 2)
+    ωs = range(0.0, 10.0, length = 7)
+    q = 10_000_000
+    for G in (
+            transfer_function(A, B, C, D, s),
+            transfer_function(diagm([-q, -q, -q]), [1, 1, 1], [1, 0, 0], 0, s),
+            transfer_function(fill(-1 // 3, 1, 1), [1], [1], 0, s),
+        )
+        H = frequency_response(G, s, ωs; exact = false)
+        @test H ≈ frequency_response(G, s, ωs) rtol = 1.0e-10
+    end
+    # at the resonance of the damped cascade the `ComplexF64` evaluation loses every digit
+    δ = 1.0e-8
+    G = transfer_function([0 1 0 0; -1 -δ 0 0; 0 0 0 1; 1 0 -1 -δ], [0, 1, 0, 0], [0 0 1 0], 0, s)
+    @test !(frequency_response(G, s, [1.0]; exact = false)[1] ≈ 1 / (im * δ)^2)
+end
+
 has_division(x) = iscall(x) &&
     (isdiv(x) || ispow(x) && value(arguments(x)[2]) < 0 || any(has_division, arguments(x)))
 

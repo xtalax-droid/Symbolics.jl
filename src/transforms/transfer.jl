@@ -208,7 +208,7 @@ function _determinant(M::Matrix{DP.Polynomial}, unit)
 end
 
 """
-    frequency_response(G, s, ωs)
+    frequency_response(G, s, ωs; exact = true)
 
 Evaluate the transfer function matrix `G` (see [`transfer_function`](@ref)) at `s = im*ω`
 for every angular frequency `ω` in `ωs`. Returns an `Array{ComplexF64, 3}` of size
@@ -219,9 +219,10 @@ If every entry of `G` is a fraction of polynomials in `s`, as the result of
 constants in `G` taken as the rationals they represent, and rounded to `ComplexF64` once.
 The expanded polynomials can cancel to far fewer digits than `Float64` holds, for example
 near a lightly damped resonance. This takes tens of microseconds per entry and frequency
-for a system with six states. Otherwise, for example for a delay `exp(-s)`, `G` is
-evaluated in `ComplexF64` arithmetic, with a function generated once by
-[`build_function`](@ref).
+for a system with six states. With `exact = false`, or if `G` has other entries, for
+example a delay `exp(-s)`, `G` is evaluated in `ComplexF64` arithmetic, with a function
+generated once by [`build_function`](@ref). This is tens of times faster, but the
+cancellation can leave no correct digits, or give `NaN`, close to a resonance.
 
 `s` must be the only variable in `G`: substitute numeric values for all parameters first,
 otherwise an `ArgumentError` is thrown. `substitute` folds the constants in the arithmetic
@@ -249,7 +250,9 @@ julia> frequency_response(substitute(G, Dict(T => 2)), s, [0.5, 1.0])
  0.2 - 0.4im
 ```
 """
-function frequency_response(G::AbstractMatrix{Num}, s::Num, ωs::AbstractVector{<:Real})
+function frequency_response(
+        G::AbstractMatrix{Num}, s::Num, ωs::AbstractVector{<:Real}; exact::Bool = true
+    )
     free = Set{SymbolicT}()
     for g in G
         union!(free, get_variables(g))
@@ -265,10 +268,11 @@ function frequency_response(G::AbstractMatrix{Num}, s::Num, ωs::AbstractVector{
     atoms = Bijections.Bijection{SymbolicUtils.PolyVarT, SymbolicT}()
     x = SymbolicUtils.basicsymbolic_to_polyvar(Bijections.active_inv(atoms), unwrap(s))
     fractions = map(G) do g
+        exact || return nothing
         num, den = _fraction!(atoms, unwrap(g))
         num, _expand(den)
     end
-    if length(atoms) == 1
+    if exact && length(atoms) == 1
         # Fractions of polynomials in `s` are evaluated exactly. Cancellation in the
         # expanded polynomials can leave far fewer correct digits than `ComplexF64` has.
         coefficients = map(f -> map(p -> _coefficients(p, x), f), fractions)
@@ -278,12 +282,19 @@ function frequency_response(G::AbstractMatrix{Num}, s::Num, ωs::AbstractVector{
         end
         return response
     end
+    # `BigInt` and rational constants would make the generated function compute in `BigFloat`
+    Gf = map(g -> Num(SymbolicUtils.Postwalk(_float_constant)(unwrap(g))), G)
     # NaNMath functions do not accept complex arguments
-    _, evaluate! = build_function(G, s; expression = Val{false}, nanmath = false)
+    _, evaluate! = build_function(Gf, s; expression = Val{false}, nanmath = false)
     for (k, ω) in enumerate(ωs)
         evaluate!(view(response, :, :, k), complex(0.0, ω))
     end
     return response
+end
+
+function _float_constant(x)
+    SymbolicUtils.isconst(x) && unwrap_const(x) isa Union{BigInt, Rational} || return x
+    return SymbolicUtils.Const{SymbolicUtils.SymReal}(Float64(unwrap_const(x)))
 end
 
 # The coefficients of `p`, a polynomial in `x` alone, in increasing degree
