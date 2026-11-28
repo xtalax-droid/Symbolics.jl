@@ -682,16 +682,22 @@ function executediff(D::Differential, arg::BasicSymbolic{VartypeT}; simplify=fal
                 summed_args = SymbolicUtils.ArgsT{VartypeT}()
                 inner_function = arguments(arg)[1]
                 # substitution does not enter a transform term, so it cannot set the integration variable there
-                SymbolicUtils.query(z -> is_fourier_term(z) && !isequal(operation(z).var, domainvars) && occursin_info(domainvars, z), inner_function) && return D(arg)
+                opaque = SymbolicUtils.query(z -> is_fourier_term(z) && !isequal(operation(z).var, domainvars) && occursin_info(domainvars, z), inner_function)
                 if iscall(a) || isequal(a, D.x)
-                    t1 = substitute_in_deriv_and_depvar(inner_function, Dict(domainvars => a))
                     t2 = executediff(D, a; simplify, throw_no_derivative)
-                    push!(summed_args, -t1*t2)
+                    if !_iszero_derivative(t2)
+                        opaque && return D(arg)
+                        t1 = substitute_in_deriv_and_depvar(inner_function, Dict(domainvars => a))
+                        push!(summed_args, -t1*t2)
+                    end
                 end
                 if iscall(b) || isequal(b, D.x)
-                    t1 = substitute_in_deriv_and_depvar(inner_function, Dict(domainvars => b))
                     t2 = executediff(D, b; simplify, throw_no_derivative)
-                    push!(summed_args, t1*t2)
+                    if !_iszero_derivative(t2)
+                        opaque && return D(arg)
+                        t1 = substitute_in_deriv_and_depvar(inner_function, Dict(domainvars => b))
+                        push!(summed_args, t1*t2)
+                    end
                 end
                 inner = executediff(D, inner_function; simplify, throw_no_derivative)
                 push!(summed_args, f(inner))

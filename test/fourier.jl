@@ -176,6 +176,9 @@ end
     @test isequal(substitute(real(T) + 1, Dict(real(T) => 2)), Num(3))
     G = Integral(t in Symbolics.DomainSets.ClosedInterval(0, a))(real(T))
     @test Symbolics.hasnode(isequal(unwrap(real(T))), unwrap(expand_derivatives(Differential(a)(G))))
+    # with fixed bounds the Leibniz rule substitutes nothing
+    Iw = Integral(w in Symbolics.DomainSets.ClosedInterval(0, 1))
+    @test isequal(expand_derivatives(Differential(a)(Iw(a * real(T)))), Iw(real(T)))
     # the Leibniz rule would substitute the integration variable into a transform term
     @syms s
     for G in (
