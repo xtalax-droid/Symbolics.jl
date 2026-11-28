@@ -195,6 +195,22 @@ end
     @test H[2] ≈ -1 / 3
 end
 
+using Symbolics.SymbolicUtils: iscall, isdiv, ispow, arguments
+has_division(x) = iscall(x) &&
+    (isdiv(x) || ispow(x) && value(arguments(x)[2]) < 0 || any(has_division, arguments(x)))
+
+@testset "fractions nested in powers" begin
+    @variables t
+    # `a == s` for every `t != 0`, so `sI - A` is identically singular
+    a = s + (1 + 1 / t)^2 - 1 - 2 / t - 1 / t^2
+    for simplify in (false, true)
+        @test_throws ArgumentError transfer_function(fill(a, 1, 1), [1], [1], 0, s; simplify)
+        G = transfer_function(fill(-(1 + 1 / t)^2, 1, 1), [1], [1], 0, s; simplify)
+        @test !any(has_division, Symbolics.arguments(Symbolics.unwrap(G[1])))
+        @test exact_value(G[1], s => big(2), t => big(3)) == 1 // (2 + (1 + 1 // big(3))^2)
+    end
+end
+
 @testset "free parameters" begin
     G = transfer_function(fill(-1 / T, 1, 1), [1 / T], [1], 0, s)
     @test_throws ArgumentError frequency_response(G, s, [1.0])
@@ -236,9 +252,11 @@ end
     G = transfer_function(fill((a + b)^70, 1, 1), [1], [1], 0, s)
     @test exact_value(G[1], s => big(0), a => big(1), b => big(1)) == -1 // big(2)^70
 
-    # floating-point coefficients outside the range of `Float64`
-    @test_throws ArgumentError transfer_function(diagm(fill(-1.0e200, 2)), [1, 1], [1, 0], 0, s)
-    @test_throws ArgumentError transfer_function(diagm(fill(-1.0e-200, 2)), [1, 1], [1, 0], 0, s)
+    # floating-point constants whose products are outside the range of `Float64`
+    for K in (1.0e200, 1.0e-200)
+        G = transfer_function(diagm(fill(-K, 2)), [1, 1], [1, 0], 0, s)
+        @test exact_value(G[1], s => big(0)) == 1 // Rational{BigInt}(K)
+    end
 end
 
 @testset "floating-point constants are combined exactly" begin

@@ -17,18 +17,19 @@ substituted by their values at the operating point before calling
 [`frequency_response`](@ref).
 
 Each entry is a fraction of two expanded polynomials, after clearing the denominators of
-the entries of `A`, `B`, `C` and `D`. Common factors of numerator and denominator, such as
+the entries of `A`, `B`, `C` and `D`, also those nested in sums, products and integer
+powers. Common factors of numerator and denominator, such as
 uncontrollable or unobservable modes, are only cancelled with `simplify = true`, which
 calls `simplify_fractions` on each entry and can be slow. The determinants are expanded
 without division, so the cost and the size of the result can grow exponentially with `nx`
 for dense symbolic `A`.
 
 Arithmetic on constants is exact, with floating-point constants taken as the rationals they
-represent. Without floating-point constants, coefficients which do not fit in an `Int` are
-returned as `BigInt`s. With them, all coefficients are rounded to `Float64` at the end (to
-`BigFloat` if there is a `BigFloat` constant). An `ArgumentError` is thrown for `Inf` and
-`NaN` constants, and if a coefficient overflows or underflows `Float64`. Constants inside
-other functions, such as `sin`, are left as given.
+represent, so `0.1` becomes `3602879701896397//36028797018963968`. Coefficients are never
+rounded, because rounding the expanded polynomials can move or create poles and zeros.
+They are returned as `Int` or `Rational{Int}` if they fit, and as `BigInt` or
+`Rational{BigInt}` otherwise. An `ArgumentError` is thrown for `Inf` and `NaN` constants.
+Constants inside other functions, such as `sin`, are left as given.
 
 Only the explicit form above is supported, not the descriptor form `Ex' = Ax + Bu`. If the
 matrices come from symbolic differentiation (as with ModelingToolkit's
@@ -69,23 +70,22 @@ function transfer_function(
     # All arithmetic is done on polynomials with `BigInt`-based coefficients, because
     # `expand` computes in machine integers, which wrap around silently.
     atoms = Bijections.Bijection{SymbolicUtils.PolyVarT, SymbolicT}()
-    floattype = Ref{Type}(Union{})
-    polynomial(x) = _polynomial!(atoms, floattype, unwrap(x))
+    fraction(x) = _fraction!(atoms, unwrap(x))
 
     # Row `i` of `[A B]` and of `[C D]` is multiplied by its common denominator. Then
     # `M = s*diagm(E) - A` and `G[i, j] = det([M B[:, j]; -C[i, :]' D[i, j]]) / (F[i] det(M))`.
     # converted before concatenation, which would promote rationals to floats
-    E, AB = _clear_denominators(polynomial, Matrix{Num}([Num.(collect(A)) Num.(collect(B))]))
-    F, CD = _clear_denominators(polynomial, Matrix{Num}([Num.(Cm) Num.(Dm)]))
-    sp, o = polynomial(s), polynomial(Num(0))
-    M = DP.Polynomial[(i == j ? E[i] * sp : o) - AB[i, j] for i in 1:nx, j in 1:nx]
-    detM = _determinant(M, polynomial(Num(1)))
+    E, AB = _clear_denominators(fraction, Matrix{Num}([Num.(collect(A)) Num.(collect(B))]))
+    F, CD = _clear_denominators(fraction, Matrix{Num}([Num.(Cm) Num.(Dm)]))
+    sp, o = first(fraction(s)), _expand(_Factors())
+    M = DP.Polynomial[(i == j ? E[i] * sp : zero(o)) - AB[i, j] for i in 1:nx, j in 1:nx]
+    detM = _determinant(M, o)
     iszero(detM) && throw(ArgumentError("`sI - A` is singular for every `$s`"))
     narrow(p) = Num(
         SymbolicUtils.from_poly(
             atoms,
             DP.Polynomial(
-                SymbolicUtils.PolyCoeffT[_narrow(c, floattype[]) for c in MP.coefficients(p)],
+                SymbolicUtils.PolyCoeffT[_narrow(c) for c in MP.coefficients(p)],
                 MP.monomials(p)
             )
         )
@@ -93,7 +93,7 @@ function transfer_function(
     G = Matrix{Num}(undef, ny, nu)
     for i in 1:ny, j in 1:nu
         bordered = DP.Polynomial[M AB[:, nx + j]; -permutedims(CD[i, 1:nx]) CD[i, nx + j]]
-        num = _determinant(bordered, polynomial(Num(1)))
+        num = _determinant(bordered, o)
         den = F[i] * detM
         # dividing a rational number by one would give a float
         G[i, j] = iszero(num) ? Num(0) : isone(den) ? narrow(num) : narrow(num) / narrow(den)
@@ -101,93 +101,90 @@ function transfer_function(
     return simplify ? map(simplify_fractions, G) : G
 end
 
-# `x` as a polynomial with exact coefficients, where `floattype` records the type to round
-# them to. Anything but `+`, `*` and non-negative integer powers becomes a variable of its
-# own, recorded in `atoms`.
-function _polynomial!(atoms, floattype, x::SymbolicT)
+# The factors of a denominator, as `polynomial => multiplicity`
+const _Factors = Dict{DP.Polynomial, Int}
+
+# `x` as `(numerator, factors of the denominator)`, with exact coefficients. Anything but
+# `+`, `*`, `/` and integer powers becomes a variable of its own, recorded in `atoms`.
+function _fraction!(atoms, x::SymbolicT)
     if SymbolicUtils.isconst(x)
         v = unwrap_const(x)
-        if v isa AbstractFloat
-            isfinite(v) || throw(ArgumentError("the constant $v is not finite"))
-            floattype[] = promote_type(floattype[], Float64, typeof(v))
-        end
+        v isa AbstractFloat && !isfinite(v) &&
+            throw(ArgumentError("the constant $v is not finite"))
         c = v isa Integer ? BigInt(v) :
             v isa Union{Rational, AbstractFloat} ? Rational{BigInt}(v) : nothing
-        c === nothing || return MP.polynomial(c * one(SymbolicUtils.PolyVarT))
+        c === nothing || return MP.polynomial(c * one(SymbolicUtils.PolyVarT)), _Factors()
     elseif iscall(x)
         op, args = operation(x), arguments(x)
-        op === (+) && return sum(a -> _polynomial!(atoms, floattype, a), args)
-        op === (*) && return prod(a -> _polynomial!(atoms, floattype, a), args)
+        if op === (+)
+            terms = map(a -> _fraction!(atoms, a), args)
+            common = mergewith(max, _Factors(), map(last, terms)...)
+            return sum(((num, den),) -> num * _expand(common, den), terms), common
+        end
+        op === (*) && return _product(map(a -> _fraction!(atoms, a), args))
+        op === (/) && return _product([_fraction!(atoms, args[1]), _inverse!(atoms, args[2])])
         if op === (^)
             n = unwrap_const(args[2])
-            n isa Integer && n >= 0 && return _polynomial!(atoms, floattype, args[1])^Int(n)
+            n isa Integer && n >= 0 && return _power(_fraction!(atoms, args[1]), n)
+            n isa Integer && return _power(_inverse!(atoms, args[1]), -n)
         end
     end
     var = SymbolicUtils.basicsymbolic_to_polyvar(Bijections.active_inv(atoms), x)
-    return MP.polynomial(big(1) * var)
+    return MP.polynomial(big(1) * var), _Factors()
 end
 
-# Coefficients are rounded to `F`, or converted back to machine numbers if they fit
-function _narrow(v, F)
-    if F === Union{}
-        q = isone(denominator(v)) ? numerator(v) : v
-        fits = abs(numerator(q)) <= typemax(Int) && denominator(q) <= typemax(Int)
-        return fits ? (q isa BigInt ? Int(q) : Rational{Int}(q)) : q
+# `1 / x` as in `_fraction!`, keeping the factors of a product apart so that they can be
+# shared with other denominators
+function _inverse!(atoms, x::SymbolicT)
+    if iscall(x)
+        op, args = operation(x), arguments(x)
+        op === (*) && return _product(map(a -> _inverse!(atoms, a), args))
+        op === (/) && return _product([_fraction!(atoms, args[2]), _inverse!(atoms, args[1])])
+        if op === (^)
+            n = unwrap_const(args[2])
+            n isa Integer && n >= 0 && return _power(_inverse!(atoms, args[1]), n)
+            n isa Integer && return _power(_fraction!(atoms, args[1]), -n)
+        end
     end
-    x = F(v)
-    isfinite(x) && iszero(x) == iszero(v) || throw(
-        ArgumentError("the coefficient $(BigFloat(v)) cannot be represented as a `$F`")
+    num, den = _fraction!(atoms, x)
+    MP.isconstant(num) && !iszero(num) &&
+        return _expand(den) * (1 // MP.leading_coefficient(num)), _Factors()
+    return _expand(den), _Factors(num => 1)
+end
+
+_product(fractions) = prod(first, fractions), mergewith(+, _Factors(), map(last, fractions)...)
+_power((num, den), n) = num^n, _Factors(p => n * k for (p, k) in den)
+
+# The product of the factors in `common` which are not in `den`
+function _expand(common, den = _Factors())
+    return prod(
+        (p^(k - get(den, p, 0)) for (p, k) in common);
+        init = MP.polynomial(big(1) * one(SymbolicUtils.PolyVarT))
     )
-    return x
+end
+
+# Coefficients are converted back to machine numbers if they fit
+function _narrow(v)
+    q = isone(denominator(v)) ? numerator(v) : v
+    fits = abs(numerator(q)) <= typemax(Int) && denominator(q) <= typemax(Int)
+    return fits ? (q isa BigInt ? Int(q) : Rational{Int}(q)) : q
 end
 
 # Returns `(d, P)` with `P == d .* X` row-wise and no fractions left in `P`, so that like
 # terms cancel in the determinants.
-function _clear_denominators(polynomial, X::Matrix{Num})
-    d = DP.Polynomial[polynomial(Num(1)) for _ in axes(X, 1)]
+function _clear_denominators(fraction, X::Matrix{Num})
+    d = Vector{DP.Polynomial}(undef, size(X, 1))
     P = Matrix{DP.Polynomial}(undef, size(X))
     for i in axes(X, 1)
-        fractions = map(X[i, :]) do x
-            ux = unwrap(x)
-            map(_fraction, isadd(ux) ? arguments(ux) : [ux])
-        end
-        common = Dict{SymbolicT, Int}()
-        for entry in fractions, (_, den) in entry
-            mergewith!(max, common, den)
-        end
-        for (base, pow) in common
-            d[i] *= polynomial(base)^pow
-        end
+        fractions = map(fraction, X[i, :])
+        common = mergewith(max, _Factors(), map(last, fractions)...)
+        d[i] = _expand(common)
         for j in axes(X, 2)
-            P[i, j] = sum(fractions[j]) do (num, den)
-                term = polynomial(num)
-                for (base, pow) in common
-                    term *= polynomial(base)^(pow - get(den, base, 0))
-                end
-                term
-            end
+            num, den = fractions[j]
+            P[i, j] = num * _expand(common, den)
         end
     end
     return d, P
-end
-
-# A term as `(numerator, factors of the denominator => multiplicity)`
-function _fraction(t)
-    den = Dict{SymbolicT, Int}()
-    isdiv(t) || return t, den
-    num, d = arguments(t)
-    for factor in (ismul(d) ? arguments(d) : [d])
-        base, pow = factor, 1
-        if ispow(factor)
-            b, p = arguments(factor)
-            n = unwrap_const(p)
-            if n isa Integer && n > 0
-                base, pow = b, Int(n)
-            end
-        end
-        _isone(base) || (den[base] = get(den, base, 0) + pow)
-    end
-    return num, den
 end
 
 # Division-free Laplace expansion, memoised on the set of remaining columns. Zero entries
