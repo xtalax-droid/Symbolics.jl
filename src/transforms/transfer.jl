@@ -211,15 +211,25 @@ end
     frequency_response(G, s, ωs)
 
 Evaluate the transfer function matrix `G` (see [`transfer_function`](@ref)) at `s = im*ω`
-for every angular frequency `ω` in `ωs`, in `ComplexF64` arithmetic. Returns an
-`Array{ComplexF64, 3}` of size `(ny, nu, length(ωs))`. The function for `G` is generated
-once with [`build_function`](@ref).
+for every angular frequency `ω` in `ωs`. Returns an `Array{ComplexF64, 3}` of size
+`(ny, nu, length(ωs))`.
+
+If every entry of `G` is a fraction of polynomials in `s`, as the result of
+`transfer_function` is, it is evaluated in exact rational arithmetic, with `ω` and the
+constants in `G` taken as the rationals they represent, and rounded to `ComplexF64` once.
+The expanded polynomials can cancel to far fewer digits than `Float64` holds, for example
+near a lightly damped resonance. This takes tens of microseconds per entry and frequency
+for a system with six states. Otherwise, for example for a delay `exp(-s)`, `G` is
+evaluated in `ComplexF64` arithmetic, with a function generated once by
+[`build_function`](@ref).
 
 `s` must be the only variable in `G`: substitute numeric values for all parameters first,
-otherwise an `ArgumentError` is thrown. `substitute` computes with machine integers, which
-wrap around silently, so use floating-point numbers for large parameter values. At a pole on the grid the entry is not finite (it
-contains `Inf` or `NaN`). A common factor of numerator and denominator which vanishes on
-the grid also gives `NaN`.
+otherwise an `ArgumentError` is thrown. `substitute` folds the constants in the arithmetic
+of the values, so machine integers can wrap around and floating-point numbers round. To
+keep the exact evaluation, substitute `Rational{BigInt}` values, such as
+`Rational{BigInt}(0.1)`. At a pole on the grid the entry is not finite (it contains `Inf`
+or `NaN`). A common factor of numerator and denominator which vanishes on the grid also
+gives `NaN`.
 
 # Examples
 
@@ -251,11 +261,45 @@ function frequency_response(G::AbstractMatrix{Num}, s::Num, ωs::AbstractVector{
             `substitute` their values first."
         )
     )
+    response = Array{ComplexF64}(undef, size(G)..., length(ωs))
+    atoms = Bijections.Bijection{SymbolicUtils.PolyVarT, SymbolicT}()
+    x = SymbolicUtils.basicsymbolic_to_polyvar(Bijections.active_inv(atoms), unwrap(s))
+    fractions = map(G) do g
+        num, den = _fraction!(atoms, unwrap(g))
+        num, _expand(den)
+    end
+    if length(atoms) == 1
+        # Fractions of polynomials in `s` are evaluated exactly. Cancellation in the
+        # expanded polynomials can leave far fewer correct digits than `ComplexF64` has.
+        coefficients = map(f -> map(p -> _coefficients(p, x), f), fractions)
+        for (k, ω) in enumerate(ωs), I in CartesianIndices(G)
+            num, den = map(c -> _horner(c, Rational{BigInt}(ω)), coefficients[I])
+            response[I, k] = iszero(den) ? ComplexF64(num) / 0 : ComplexF64(num / den)
+        end
+        return response
+    end
     # NaNMath functions do not accept complex arguments
     _, evaluate! = build_function(G, s; expression = Val{false}, nanmath = false)
-    response = Array{ComplexF64}(undef, size(G)..., length(ωs))
     for (k, ω) in enumerate(ωs)
         evaluate!(view(response, :, :, k), complex(0.0, ω))
     end
     return response
+end
+
+# The coefficients of `p`, a polynomial in `x` alone, in increasing degree
+function _coefficients(p, x)
+    c = zeros(Rational{BigInt}, MP.maxdegree(p) + 1)
+    for term in MP.terms(p)
+        c[MP.degree(MP.monomial(term), x) + 1] = MP.coefficient(term)
+    end
+    return c
+end
+
+# The polynomial with coefficients `c` at `s = im*ω`, by Horner's rule
+function _horner(c, ω)
+    re, im = zero(ω), zero(ω)
+    for k in reverse(eachindex(c))
+        re, im = c[k] - im * ω, re * ω
+    end
+    return complex(re, im)
 end

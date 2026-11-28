@@ -22,6 +22,17 @@ H = frequency_response(substitute(G, Dict(R => 1.0, L => 0.5, C => 0.2)), s, [0.
 Magnitude and phase of the first input-output pair are `abs.(H[1, 1, :])` and
 `angle.(H[1, 1, :])`.
 
+The coefficients of `G` are kept exact, and `frequency_response` evaluates them in exact
+rational arithmetic before rounding to `ComplexF64`, because the expanded polynomials can
+cancel to far fewer digits than `Float64` holds near a lightly damped resonance.
+`substitute` folds constants in the arithmetic of the values it is given, so floating-point
+values round there. Substitute rational values to keep the evaluation exact:
+
+```@example transfer
+vals = Dict(R => Rational{BigInt}(1.0e-8), L => 1, C => 1)
+frequency_response(substitute(G, vals), s, [1.0])
+```
+
 The matrices of a nonlinear model linearized symbolically, for example by
 ModelingToolkit's `linearize_symbolic`, can be passed directly. That linearization uses
 symbolic differentiation, so it only works for models whose operations can all be

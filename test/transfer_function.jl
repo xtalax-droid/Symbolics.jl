@@ -195,6 +195,16 @@ end
     @test H[2] ≈ -1 / 3
 end
 
+@testset "damped cascade" begin
+    # `(s^2 + δs + 1)^2` expanded has the coefficient `2 + δ^2`, which rounds to `2.0`
+    δ = 1.0e-8
+    A = [0 1 0 0; -1 -δ 0 0; 0 0 0 1; 1 0 -1 -δ]
+    for simplify in (false, true)
+        G = transfer_function(A, [0, 1, 0, 0], [0 0 1 0], 0, s; simplify)
+        @test frequency_response(G, s, [1.0])[1] ≈ 1 / (im * δ)^2 rtol = 4 * eps()
+    end
+end
+
 using Symbolics.SymbolicUtils: iscall, isdiv, ispow, arguments
 has_division(x) = iscall(x) &&
     (isdiv(x) || ispow(x) && value(arguments(x)[2]) < 0 || any(has_division, arguments(x)))
