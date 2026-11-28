@@ -196,6 +196,9 @@ end
     @syms g(B::AbstractVector)::Real
     H = Symbolics.hessian_sparsity(real(FourierTransform(t => w)(f(t))) + g(A) + x^2 + y, [w, x, y, d])
     @test Matrix(H) == Bool[1 1 1 1; 1 1 0 0; 1 0 0 0; 1 0 0 0]
+    # and so do those of a transform term that holds one
+    H = Symbolics.hessian_sparsity(real(FourierTransform(t => w)(f(t) + g(A))), [w, a])
+    @test Matrix(H) == Bool[1 1; 1 1]
     @test !Symbolics.isaffine(real(T), [w])
 
     # generated code cannot evaluate a transform term

@@ -1343,16 +1343,15 @@ function hessian_sparsity(expr, vars::AbstractVector; full::Bool=true, linearity
     # transform terms are opaque to the linearity analysis: a variable in one may pair with any other
     if expr isa SymbolicT && SymbolicUtils.query(is_fourier_term, expr)
         transforms = filterchildren(is_fourier_term, expr)
-        fourier_vars = findall(ui -> any(z -> occursin_info(ui, z), transforms), u)
-        # an array expression elsewhere makes `occursin_info` throw; count the variable as occurring
-        occurring = findall(u) do ui
-            try
-                occursin_info(ui, expr)
-            catch err
-                err isa ErrorException || rethrow()
-                true
-            end
+        # an array expression makes `occursin_info` throw; count the variable as occurring
+        occurs = (ui, ex) -> try
+            occursin_info(ui, ex)
+        catch err
+            err isa ErrorException || rethrow()
+            true
         end
+        fourier_vars = findall(ui -> any(z -> occurs(ui, z), transforms), u)
+        occurring = findall(ui -> occurs(ui, expr), u)
         I, J = vec([i for i in fourier_vars, j in occurring]), vec([j for i in fourier_vars, j in occurring])
         S = S .| sparse([I; J], [J; I], true, length(u), length(u))
     end
