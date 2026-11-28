@@ -116,25 +116,23 @@ end
     for (T, x, k) in ((FourierTransform, t, w), (InverseFourierTransform, w, t))
         transform = T === FourierTransform ? fourier : inverse_fourier
         F = T(x => k; convention = :ordinary)(f(x))
-        # :ordinary at frequency 1: e^{∓2πis} is exactly 1 for an integer s and -1 for an odd half-integer
-        for (s, z) in ((Int64(2)^60, 1), ((Int64(2)^51 + 1) // 2, -1), (Int64(3) // 2, -1))
+        # :ordinary: e^{∓2πiks} is exactly 1 for an integer ks and -1 for an odd half-integer one
+        for (s, z) in ((Int64(2)^20, 1), (Int64(2)^20 + 1 // 2, -1), (Int64(3) // 2, -1))
             result = transform(f(x + s), x => k; convention = :ordinary)
-            @test multiplier(result, F, k, 1.0) == z
+            @test multiplier(result, F, k, 5.0) == z
         end
         # an exact numeric phase is reduced exactly, however large
+        Fk = T(x => 1; convention = :ordinary)(f(x))
         for (s, z) in ((big(2)^1000 + 12345, 1), (big(2)^1000 + 1 // 2, -1))
-            Fk = T(x => 1; convention = :ordinary)(f(x))
             @test multiplier(transform(f(x + s), x => 1; convention = :ordinary), Fk, k, 1.0) == z
         end
-        # a phase constant Float64 cannot hold exactly leaves the term unevaluated
-        for convention in (:angular, :unitary, :ordinary), s in (Int64(2)^55 + 1, big(2)^1000 + 12345, (Int64(2)^55 + 1) // 2)
+        # and keeps its sign, so a small negative phase is not rounded to zero
+        z = multiplier(transform(f(x - 1.0e-20), x => 1; convention = :ordinary), Fk, k, 1.0)
+        @test imag(z) ≈ (T === FourierTransform ? -1 : 1) * 2π * 1.0e-20
+        # a large exact phase constant, which a float frequency would round, leaves the term unevaluated
+        for convention in (:angular, :unitary, :ordinary),
+                s in (Int64(2)^60, (Int64(2)^51 + 1) // 2, Int64(2)^55 + 1, big(2)^1000 + 12345, (Int64(2)^55 + 1) // 2)
             @test isequal(transform(f(x + s), x => k; convention), T(x => k; convention)(f(x + s)))
-        end
-        # one it can hold gives the phase of the exact angle
-        for convention in (:angular, :unitary)
-            result = transform(f(x + Int64(2)^60), x => k; convention)
-            z = multiplier(result, T(x => k; convention)(f(x)), k, 1.0)
-            @test z ≈ cis((T === FourierTransform ? 1 : -1) * big(2)^60) atol = 1.0e-15
         end
     end
 end

@@ -218,11 +218,10 @@ function _transform_affine(op::FourierOperator, g::SymbolicT)
     ordinary = op.convention === :ordinary
     θ = -_kernel_beta(op) * k * Num(d)
     # cospi and sinpi have period 2, so an exact numeric phase loses nothing by reduction
-    ordinary && SymbolicUtils.isconst(unwrap(θ)) && (θ = Num(mod(unwrap_const(unwrap(θ)), 2)))
-    # a phase constant this large that the evaluation type cannot hold exactly would be off
-    # by more than about 1e-8 rad
-    F = keepbig ? BigFloat : Float64
-    lossy = (v, r) -> v isa BigFloat ? r != v : v isa Union{Integer, Rational} && F(r) != r
+    ordinary && SymbolicUtils.isconst(unwrap(θ)) && (θ = Num(rem(unwrap_const(unwrap(θ)), 2)))
+    # a rounded phase constant this large would be off by more than about 1e-8 rad, and an
+    # exact one would be rounded once it meets a float frequency
+    lossy = (v, r) -> v isa BigFloat ? r != v : v isa Union{Integer, Rational}
     θ = _mapconsts(v -> (r = narrow(v); lossy(v, r) && abs(v) > 2^26 ? NaN : r), θ)
     scale = narrow(abs(ic))
     # a float that cannot represent the phase, point or scale would make the result wrong
