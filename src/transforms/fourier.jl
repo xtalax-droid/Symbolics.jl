@@ -149,9 +149,10 @@ function _affine_parts(u::SymbolicT, x::SymbolicT)
     return nothing
 end
 
-# The transform is ∝ ∫ g(x) exp(iβkx) dx, evaluated at k.
+# The transform is ∝ ∫ g(x) exp(iβkx) dx, evaluated at k. This is β/π for `:ordinary`, whose
+# phases are kept in units of π, and β otherwise.
 function _kernel_beta(op::FourierOperator)
-    β = op.convention === :ordinary ? -2 * Num(π) : Num(-1)
+    β = op.convention === :ordinary ? -2 : -1
     return op isa FourierTransform ? β : -β
 end
 _at(op::T, point) where {T <: FourierOperator} = T(op.var, unwrap(point), op.convention)
@@ -214,15 +215,22 @@ function _transform_affine(op::FourierOperator, g::SymbolicT)
     narrow = v -> _narrow(v, keepbig)
     k = Num(_mapconsts(_widen, op.point)) * ic
     point = _mapconsts(narrow, k)
-    # a rounded phase constant this large would be off by more than about 1e-8 rad
-    θ = _mapconsts(v -> (r = narrow(v); v isa BigFloat && r != v && abs(r) > 2^26 ? NaN : r), -_kernel_beta(op) * k * Num(d))
+    ordinary = op.convention === :ordinary
+    θ = -_kernel_beta(op) * k * Num(d)
+    # cospi and sinpi have period 2, so an exact numeric phase loses nothing by reduction
+    ordinary && SymbolicUtils.isconst(unwrap(θ)) && (θ = Num(mod(unwrap_const(unwrap(θ)), 2)))
+    # a phase constant this large that the evaluation type cannot hold exactly would be off
+    # by more than about 1e-8 rad
+    F = keepbig ? BigFloat : Float64
+    lossy = (v, r) -> v isa BigFloat ? r != v : v isa Union{Integer, Rational} && F(r) != r
+    θ = _mapconsts(v -> (r = narrow(v); lossy(v, r) && abs(v) > 2^26 ? NaN : r), θ)
     scale = narrow(abs(ic))
     # a float that cannot represent the phase, point or scale would make the result wrong
     (_nonfinite(point) || _nonfinite(θ) || !isfinite(scale)) && return _transform_term(op, g)
     newargs = collect(SymbolicT, args)
     newargs[only(i)] = x
     h = maketerm(SymbolicT, operation(g), newargs, metadata(g))
-    phase = _iszero(θ) ? 1 : Complex{Num}(cos(Num(θ)), sin(Num(θ)))
+    phase = _iszero(θ) ? 1 : ordinary ? Complex{Num}(cospi(Num(θ)), sinpi(Num(θ))) : Complex{Num}(cos(Num(θ)), sin(Num(θ)))
     return phase * scale * _transform_term(_at(op, point), h)
 end
 
